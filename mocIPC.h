@@ -4,19 +4,21 @@
 
 namespace MocIPC {
 
-
+template <typename T>
+inline typename std::enable_if<std::is_pointer<T>::value, T>::type getArg(void* arg) {
+	if (!arg) return nullptr;
+	return reinterpret_cast<T>(reinterpret_cast<char*>(arg) + sizeof(uint32_t));
+}
 
 template <typename T>
-inline T *getArg(void *arg)
-{
-	if (!arg)
-		return (T *)0;
-	return ((T *)((char *)arg + sizeof(uint32_t)));
+inline typename std::enable_if<!std::is_pointer<T>::value, T>::type getArg(void* arg) {
+	if (!arg) T();
+	return *reinterpret_cast<T*>(reinterpret_cast<char*>(arg) + sizeof(uint32_t));
 }
 
 inline uint32_t getSize(void *arg)
 {
-	return *(uint32_t*)arg;
+	return ( arg ? *(uint32_t*)arg : 0 );
 }
 
 class IPCBase {

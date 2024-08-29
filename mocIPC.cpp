@@ -192,7 +192,8 @@ struct test_t {
 
 void testcb(void* arg)
 {
-    MOCIPC_DBGPRINT("into cb, data: %d, size: %d", MocIPC::getArg<test_t>(arg)->flag, MocIPC::getSize(arg));
+    MOCIPC_DBGPRINT("into cb, data: %d, size: %d", MocIPC::getArg<test_t>(arg).flag, MocIPC::getSize(arg));
+    MOCIPC_DBGPRINT("into cb, data: %d, size: %d", MocIPC::getArg<test_t *>(arg)->flag, MocIPC::getSize(arg));
 }
 
 } /* testSuit */
