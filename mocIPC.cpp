@@ -180,35 +180,3 @@ void IPCClient::writeImpl(void* src, uint32_t size)
 
 } /* MocIPC client */
 
-
-namespace testSuite {
-
-struct test_t {
-    uint32_t flag;
-    uint8_t data;
-};
-
-void testcb(void* arg)
-{
-    MOCIPC_DBGPRINT("into cb, data: %d, size: %d", MocIPC::getArg<test_t>(arg)->flag, MocIPC::getSize(arg));
-}
-
-} /* testSuit */
-
-
-int main()
-{
-    std::cout << "Hello World!\n";
-    MocIPC::IPCServer* server = new MocIPC::IPCServer();
-    server->registerRecvHOOK(testSuite::testcb);
-
-    MocIPC::IPCClient* client = new MocIPC::IPCClient();
-    client->registerRecvHOOK(testSuite::testcb);
-    testSuite::test_t a = { 1212, 234 };
-
-    while (1) {
-        server->write((void*)&a, sizeof(testSuite::test_t));
-        client->write((void*)&a, sizeof(testSuite::test_t));
-        Sleep(10);
-    }
-}
