@@ -14,6 +14,8 @@
 #endif
 
 namespace MocIPC {
+const wchar_t* IPCBase::MOCIPC_DEFAULT_SHAREDSVC = L"\\\\.\\pipe\\MOCSVC";
+const wchar_t* IPCBase::MOCIPC_DEFAULT_SHAREDCVS = L"\\\\.\\pipe\\MOCCVS";
 
 IPCBase::IPCBase(const wchar_t* _sharedSVCName, const wchar_t* _sharedCVSName)
 {

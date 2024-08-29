@@ -3,8 +3,7 @@
 #include <thread>
 
 namespace MocIPC {
-const wchar_t *MOCIPC_DEFAULT_SHAREDSVC = L"\\\\.\\pipe\\MOCSVC";
-const wchar_t *MOCIPC_DEFAULT_SHAREDCVS = L"\\\\.\\pipe\\MOCCVS";
+
 
 
 template <typename T>
@@ -23,6 +22,8 @@ inline uint32_t getSize(void *arg)
 class IPCBase {
 public:
 	using recvHookCallbackType = void(*)(void*);
+	static const wchar_t* MOCIPC_DEFAULT_SHAREDSVC;
+	static const wchar_t* MOCIPC_DEFAULT_SHAREDCVS;
 
 	virtual void write(void* src, uint32_t size) = 0;
 	IPCBase(const wchar_t* _sharedSVCName, const wchar_t* _sharedCVSName);
