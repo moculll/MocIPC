@@ -2,14 +2,18 @@
 #include <windows.h>
 #include <thread>
 #include <map>
+#include <vector>
+#include <string>
 #if UNICODE
 #define CHARTYPE wchar_t
 #define STRINGLEN wcslen
 #define STRCPYSAFE wcscpy_s
+#define STRSTR wcsstr
 #else
 #define CHARTYPE char
 #define STRINGLEN strlen
 #define STRCPYSAFE strcpy_s
+#define STRSTR strstr
 #endif
 
 namespace MocIPC {
@@ -31,6 +35,15 @@ inline uint32_t getSize(void* arg)
 	return (arg ? *(uint32_t*)arg : 0);
 }
 
+struct exchageMsg_t {
+	union {
+		char serverToClient[256];
+		char clientToServer[256];
+	};
+};
+
+
+
 class IPCBase {
 public:
 	static constexpr int BUFFER_BLOCK_SIZE = 1024;
@@ -46,10 +59,10 @@ public:
 	IPCBase() : IPCBase(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
 	~IPCBase()
 	{
-		delete buffer;
+
 		delete sharedSVCName;
 		delete sharedCVSName;
-		buffer = nullptr;
+
 		sharedSVCName = nullptr;
 		sharedCVSName = nullptr;
 		recvHOOK = nullptr;
@@ -67,8 +80,22 @@ protected:
 	recvHookCallbackType recvHOOK;
 	CHARTYPE* sharedSVCName;
 	CHARTYPE* sharedCVSName;
-	char* buffer;
-	std::map<int, int> handle;
+
+	struct controlBlock_t {
+		HANDLE publicPipe;
+		struct info_t {
+			HANDLE pipe;
+			CHARTYPE pipeName[256];
+			CHARTYPE buffer[BUFFER_BLOCK_SIZE];
+			info_t(HANDLE p, const CHARTYPE *name) : pipe(p) {
+				memcpy(pipeName, name, 256);
+				memset(buffer, 0, BUFFER_BLOCK_SIZE);
+			}
+		};
+		std::vector<info_t> infos;
+	};
+	
+
 };
 
 class IPCServer : public IPCBase {
@@ -77,8 +104,15 @@ public:
 	IPCServer() : IPCServer(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
 
 private:
-	static void recvThreadCallback(IPCServer* obj);
+	std::thread listenThread;
+	void IPCServerListenConnectThreadCallback();
+	void recvThreadCallback();
 	void writeImpl(void* src, uint32_t size);
+
+	const char *IPCServerAllocNewHandle();
+
+	controlBlock_t scb;
+	
 };
 
 class IPCClient : public IPCBase {
@@ -87,8 +121,10 @@ public:
 	IPCClient() : IPCClient(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
 
 private:
-	static void recvThreadCallback(IPCClient* obj);
+	void recvThreadCallback();
 	void writeImpl(void* src, uint32_t size);
+	controlBlock_t ccb;
+
 };
 
 } /* MocIPC */
