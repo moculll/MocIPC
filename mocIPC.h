@@ -4,6 +4,7 @@
 #include <map>
 #include <vector>
 #include <string>
+
 #if UNICODE
 #define CHARTYPE wchar_t
 #define STRINGLEN wcslen
@@ -35,95 +36,77 @@ inline uint32_t getSize(void* arg)
 	return (arg ? *(uint32_t*)arg : 0);
 }
 
-struct exchageMsg_t {
-	union {
-		char serverToClient[256];
-		char clientToServer[256];
-	};
-};
 
 
+namespace IPCStaticLibrary {
 
-class IPCBase {
-public:
-	static constexpr int BUFFER_BLOCK_SIZE = 1024;
-
-	using recvHookCallbackType = void(*)(void*);
-	static const CHARTYPE* MOCIPC_DEFAULT_SHAREDSVC;
-	static const CHARTYPE* MOCIPC_DEFAULT_SHAREDCVS;
-	static const CHARTYPE* MOCIPC_DEFAULT_SHAREDPREFIX;
-
-	virtual int write(void* src, uint32_t size);
-	virtual void writeImpl(void *src, uint32_t size) = 0;
-	IPCBase(const CHARTYPE* _sharedSVCName, const CHARTYPE* _sharedCVSName);
-	IPCBase() : IPCBase(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
-	~IPCBase()
-	{
-
-		delete sharedSVCName;
-		delete sharedCVSName;
-
-		sharedSVCName = nullptr;
-		sharedCVSName = nullptr;
-		recvHOOK = nullptr;
-	}
-	void registerRecvHOOK(recvHookCallbackType cb)
-	{
-		recvHOOK = cb;
-	}
 	
-	HANDLE createNewPipe(const CHARTYPE* pipeNameSimple);
+static inline HANDLE createDefaultPipe(const CHARTYPE* pipeName)
+{
+	return IPCStaticLibrary::createPipe(pipeName, 2048, 2048);
+}
+
+static inline HANDLE createPipe(const CHARTYPE* pipeName, uint32_t outBufferSize, uint32_t inBufferSize)
+{
+	return CreateNamedPipe(
+		pipeName,
+		PIPE_ACCESS_DUPLEX,
+		PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+		PIPE_UNLIMITED_INSTANCES,
+		outBufferSize,
+		inBufferSize,
+		NMPWAIT_USE_DEFAULT_WAIT,
+		NULL
+	);
+}
+
+} /* IPCStaticLibrary */
+
+class IPCUnit {
+public:
+	IPCUnit()
+	{
+		
+	}
+
+	HANDLE openChannel(const CHARTYPE* pipeName)
+	{
+		IPCStaticLibrary::createDefaultPipe(pipeName);
+		return 
+	}
+	void closeChannel(HANDLE handleToClose)
+	{
+
+	}
 protected:
-	HANDLE createNewPipeInternal(const CHARTYPE* pipeNameComplete);
+	std::map<HANDLE, CHARTYPE*> 
+	HANDLE 
 
-	std::thread recvThread;
-	recvHookCallbackType recvHOOK;
-	CHARTYPE* sharedSVCName;
-	CHARTYPE* sharedCVSName;
 
-	struct controlBlock_t {
-		HANDLE publicPipe;
-		struct info_t {
-			HANDLE pipe;
-			CHARTYPE pipeName[256];
-			CHARTYPE buffer[BUFFER_BLOCK_SIZE];
-			info_t(HANDLE p, const CHARTYPE *name) : pipe(p) {
-				memcpy(pipeName, name, 256);
-				memset(buffer, 0, BUFFER_BLOCK_SIZE);
-			}
-		};
-		std::vector<info_t> infos;
-	};
+private:
+	
+	std::thread
+
+
+	
 	
 
 };
 
-class IPCServer : public IPCBase {
+class IPCServer : public IPCUnit {
 public:
-	IPCServer(const CHARTYPE* sharedSVCName, const CHARTYPE* sharedCVSName);
-	IPCServer() : IPCServer(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
+
 
 private:
-	std::thread listenThread;
-	void IPCServerListenConnectThreadCallback();
-	void recvThreadCallback();
-	void writeImpl(void* src, uint32_t size);
-
-	const char *IPCServerAllocNewHandle();
-
-	controlBlock_t scb;
+	
 	
 };
 
-class IPCClient : public IPCBase {
+class IPCClient : public IPCUnit {
 public:
-	IPCClient(const CHARTYPE* sharedSVCName, const CHARTYPE* sharedCVSName);
-	IPCClient() : IPCClient(MOCIPC_DEFAULT_SHAREDSVC, MOCIPC_DEFAULT_SHAREDCVS) {}
+	
 
 private:
-	void recvThreadCallback();
-	void writeImpl(void* src, uint32_t size);
-	controlBlock_t ccb;
 
 };
 
