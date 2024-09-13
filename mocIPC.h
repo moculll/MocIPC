@@ -7,6 +7,8 @@
 #include <random>
 #include <functional>
 #include <future>
+#include <utility>
+#include <cstdint>
 #define MOCIPC_DBGPRINT_ENABLE 1
 #if MOCIPC_DBGPRINT_ENABLE
 
@@ -96,14 +98,14 @@ static inline HANDLE createPipe(const IPCDefines::miStdString &pipeName, uint32_
 		PIPE_UNLIMITED_INSTANCES,
 		outBufferSize,
 		inBufferSize,
-		NMPWAIT_USE_DEFAULT_WAIT,
+		NMPWAIT_WAIT_FOREVER,
 		NULL
 	);
 }
 
 static inline HANDLE createDefaultPipe(const IPCDefines::miStdString& pipeName)
 {
-	return IPCStaticLibrary::createPipe(pipeName, 2048, 2048);
+	return IPCStaticLibrary::createPipe(pipeName, 8192, 8192);
 }
 
 } /* IPCStaticLibrary */
@@ -124,9 +126,23 @@ protected:
 	struct serverInfo_t {
 		std::pair<HANDLE, IPCDefines::miStdString> connInfo;
 		std::atomic<bool> ready;
-
-		serverInfo_t(std::pair<HANDLE, IPCDefines::miStdString> &info, bool&& isReady)
-			: connInfo(info), ready(std::move(isReady)) {}
+		serverInfo_t& operator = (serverInfo_t&& src) noexcept
+		{
+			if (this != &src) {
+				connInfo = std::move(src.connInfo);
+				ready.store(src.ready.load());
+				src.ready.store(false);
+			}
+		}
+		serverInfo_t(serverInfo_t&& src) noexcept
+			: connInfo(std::move(src.connInfo)), ready(src.ready.load()) {
+			src.ready.store(false);
+		}
+		serverInfo_t() : connInfo(), ready(0) {}
+		serverInfo_t(std::pair<HANDLE, IPCDefines::miStdString> &info, std::atomic<bool> &isReady)
+			: connInfo(info) {
+			ready.store(isReady.load());
+		}
 	};
 
 private:
@@ -143,50 +159,67 @@ public:
 	
 	
 	
-	IPCServer()
+	IPCServer() : connMgr(), info(), recvHook(nullptr)
 	{
+		MOCIPC_DBGPRINT("server Inited!");
+		MOCIPC_DBGPRINT("infoSize: %lld", info.size());
 		connMgr = std::thread([this] {
 			HANDLE daemonHandle = INVALID_HANDLE_VALUE;
 			HANDLE newConnectionHandle = INVALID_HANDLE_VALUE;
 			DWORD bytesWritten = 0;
 			DWORD bytesToWrite = 0;
+			daemonHandle = IPCStaticLibrary::createDefaultPipe(IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDaemon"));
 			while (1) {
-
-				daemonHandle = IPCStaticLibrary::createDefaultPipe(IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDaemon"));
 				if (INVALID_HANDLE_VALUE == daemonHandle) {
+					daemonHandle = IPCStaticLibrary::createDefaultPipe(IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDaemon"));
 					MOCIPC_DBGPRINT("IPC server daemon pipe create failed!");
-					break;
+					continue;
 				}
+				/*MOCIPC_DBGPRINT("IPC server daemon pipe created!");*/
 				/* block function */
 				if (!ConnectNamedPipe(daemonHandle, NULL)) {
-					CloseHandle(daemonHandle);
-					MOCIPC_DBGPRINT("IPC server daemon pip already created, trying to close...");
+					/*MOCIPC_DBGPRINT("IPC server daemon pip already created, trying to close...");*/
 					continue;
 				}
+				MOCIPC_DBGPRINT("IPC server daemon found client connected, creating new random channel!");
 				IPCDefines::miStdString newConnectionName = IPCDefines::miStdString("\\\\.\\pipe\\MOCIPC") + IPCStaticLibrary::generateRandomStdString(8);
+
 				newConnectionHandle = IPCStaticLibrary::createDefaultPipe(newConnectionName);
 				bytesToWrite = static_cast<DWORD>(IPCStaticLibrary::getExactSizeofString(newConnectionName));
-				if (!WriteFile(daemonHandle, (void*)newConnectionName.c_str(), bytesToWrite, &bytesWritten, NULL)) {
-					MOCIPC_DBGPRINT("Failed to write to pipe. Error: %d", GetLastError());
-					CloseHandle(newConnectionHandle);
-					DisconnectNamedPipe(daemonHandle);
-					CloseHandle(daemonHandle);
-					continue;
+				while (!WriteFile(daemonHandle, (void*)newConnectionName.c_str(), bytesToWrite, &bytesWritten, NULL));
+				while (1) {
+					DWORD bytesRead;
+					DWORD bytesReadStringLen;
+					while(!ReadFile(daemonHandle, &bytesReadStringLen, sizeof(bytesReadStringLen), &bytesRead, NULL));
+					if (bytesReadStringLen == bytesToWrite) {
+						MOCIPC_DBGPRINT("read from client stringlen: %d", bytesReadStringLen);
+						break;
+					}
 				}
-				std::atomic<bool> ready(false);
-				std::async(std::launch::async, [this, &ready, newConnectionHandle] {
-					ConnectNamedPipe(newConnectionHandle, NULL);
-					ready.store(true, std::memory_order_relaxed);
-
-					handleClientConnection(newConnectionHandle);
-				});
-				std::pair<HANDLE, IPCDefines::miStdString> connInfo = std::make_pair(newConnectionHandle, newConnectionName);
-				serverInfo_t serverInfo(connInfo, std::move(ready));
-
-				info.emplace(info.size(), std::move(serverInfo));
-
 				DisconnectNamedPipe(daemonHandle);
 				CloseHandle(daemonHandle);
+				MOCIPC_DBGPRINT("writed name: %s to client!", newConnectionName.c_str());
+				std::atomic<bool> ready(false);
+				std::pair<HANDLE, IPCDefines::miStdString> connInfo = std::make_pair(newConnectionHandle, newConnectionName);
+				serverInfo_t serverInfo(connInfo, ready);
+				MOCIPC_DBGPRINT("infoSize: %lld", info.size());
+				info.emplace(info.size(), std::move(serverInfo));
+				MOCIPC_DBGPRINT("infoSize: %lld, new connection handle: %llx", info.size(), (uintptr_t)newConnectionHandle);
+				std::async(std::launch::async, [this, &ready, newConnectionHandle] {
+					MOCIPC_DBGPRINT("new connection handle: %llx", (uintptr_t)newConnectionHandle);
+					while (!ConnectNamedPipe(newConnectionHandle, NULL)) {
+						MOCIPC_DBGPRINT("failed to connect to client, exit");
+						DWORD error = GetLastError();
+						MOCIPC_DBGPRINT("ConnectNamedPipe failed with error: %lu", error);
+						return;
+					}
+					
+					/*ready.store(true, std::memory_order_relaxed);*/
+					MOCIPC_DBGPRINT("handling data received from client");
+					handleClientConnection(newConnectionHandle);
+				});
+
+				
 
 			}
 
@@ -196,45 +229,58 @@ public:
 	void registerRecvHOOK(recvHookType_t callback) {
 		recvHook = callback;
 	}
+	uint32_t write(int index, void* src, uint32_t size) {
+		DWORD bytesWritten = 0;
+		if(!info.size())
+			return bytesWritten;
+		if (index > info.size()) {
+			MOCIPC_DBGPRINT("server write index is bigger than we have");
+			return bytesWritten;
+		}
+		MOCIPC_DBGPRINT("wtire to handle: %llx", (uintptr_t)info[index].connInfo.first);
+		WriteFile(info[index].connInfo.first, src, size, &bytesWritten, NULL);
+		return bytesWritten;
+	}
 private:
 	std::thread connMgr;
 	/* { id : info } */
-	static std::map<uint32_t, serverInfo_t> info;
+	std::map<uint32_t, serverInfo_t> info;
 
 	recvHookType_t recvHook;
 	void handleClientConnection(HANDLE newConnectionHandle) {
 		char buffer[4096];
 		DWORD bytesRead;
-		while (ReadFile(newConnectionHandle, buffer, sizeof(buffer), &bytesRead, NULL)) {
+		MOCIPC_DBGPRINT("server start recv, handle: %llx", (uintptr_t)newConnectionHandle);
+		while (1) {
+			if (!ReadFile(newConnectionHandle, buffer, sizeof(buffer), &bytesRead, NULL)) {
+				MOCIPC_DBGPRINT("server read file failed");
+				continue;
+			}
+				
 			if (recvHook)
 				recvHook(buffer);
-			
 		}
+		MOCIPC_DBGPRINT("return from read");
 	}
-	uint32_t write(int index, void* src, uint32_t size) {
-		DWORD bytesWritten = 0;
-		if(index > info.size() - 1)
-			return bytesWritten;
-		WriteFile(info[index].connInfo.first, src, size, &bytesWritten, NULL);
-		return bytesWritten;
-	}
+	
 };
 
 class IPCClient : public IPCUnit {
 public:
 	using MessageCallback = std::function<void(const IPCDefines::miStdString&)>;
 	using recvHookType_t = std::function<void(void*)>;
-
-	IPCClient(const IPCDefines::miStdString& publicPipeName) : publicPipeName(publicPipeName) {
-		 std::thread([this, publicPipeName] {
+	IPCDefines::miStdString publicPipeName;
+	IPCClient(const IPCDefines::miStdString publicPipeName) : publicPipeName(publicPipeName) {
+		MOCIPC_DBGPRINT("client Inited!");
+		initThread = std::thread([this] {
 			while (true) {
-				if (!WaitNamedPipe(publicPipeName.c_str(), NMPWAIT_WAIT_FOREVER)) {
+				if (!WaitNamedPipe(this->publicPipeName.c_str(), NMPWAIT_WAIT_FOREVER)) {
 					MOCIPC_DBGPRINT("Failed to wait for named pipe");
 					continue;
 				}
 
-				HANDLE hPipe = CreateFile(
-					publicPipeName.c_str(),
+				HANDLE publicPipe = CreateFile(
+					this->publicPipeName.c_str(),
 					GENERIC_READ | GENERIC_WRITE,
 					FILE_SHARE_READ,
 					NULL,
@@ -242,38 +288,63 @@ public:
 					0,
 					NULL
 				);
-				if (hPipe == INVALID_HANDLE_VALUE) {
+				if (publicPipe == INVALID_HANDLE_VALUE) {
 					MOCIPC_DBGPRINT("Failed to connect to the daemon pipe. Error: %d", GetLastError());
 					continue;
 				}
 
-				char buffer[4096];
+				IPCDefines::miCharType_t buffer[4096];
 				DWORD bytesRead;
-				while (ReadFile(hPipe, buffer, sizeof(buffer), &bytesRead, NULL)) {
-					IPCDefines::miStdString newConnectionName(buffer, bytesRead);
+				DWORD bytedSendBackRead;
+				while (1) {
+					if (ReadFile(publicPipe, buffer, sizeof(buffer), &bytesRead, NULL) && bytesRead > 0) {
+						WriteFile(publicPipe, &bytesRead, sizeof(bytesRead), &bytedSendBackRead, NULL);
+						break;
+					}
+						
+				}
+				DisconnectNamedPipe(publicPipe);
+				CloseHandle(publicPipe);
+				
+				IPCDefines::miStdString newConnectionName(buffer, bytesRead / sizeof(IPCDefines::miCharType_t));
+				MOCIPC_DBGPRINT("received name: %s from server", newConnectionName.c_str());
+				Sleep(1000);
+				if (!WaitNamedPipe(newConnectionName.c_str(), NMPWAIT_WAIT_FOREVER)) {
+					MOCIPC_DBGPRINT("didn't catch new connection from server, wait for 1s...");
+					/*std::this_thread::sleep_for(std::chrono::microseconds(1000))*/;
+					return;
+				}
 
-					HANDLE clientPipe = CreateFile(
+				HANDLE clientPipe = INVALID_HANDLE_VALUE;
+				while (clientPipe == INVALID_HANDLE_VALUE) {
+					clientPipe = CreateFile(
 						newConnectionName.c_str(),
 						GENERIC_READ | GENERIC_WRITE,
-						FILE_SHARE_READ,
+						FILE_SHARE_READ | FILE_SHARE_WRITE,
 						NULL,
 						OPEN_EXISTING,
 						0,
 						NULL
 					);
-					if (clientPipe != INVALID_HANDLE_VALUE) {
-						std::lock_guard<std::mutex> lock(mutex);
-						connections.emplace(clientPipe, newConnectionName);
-						handleServerConnection(clientPipe);
-						break;
-					}
-					else {
-						MOCIPC_DBGPRINT("Failed to connect to client pipe. Error: %d", GetLastError());
-					}
 				}
-				CloseHandle(hPipe);
+				MOCIPC_DBGPRINT("client connected to new pipe %s, handle: %llx", newConnectionName.c_str(), (uintptr_t)clientPipe);
+				if (clientPipe != INVALID_HANDLE_VALUE) {
+
+					connections.emplace(std::move(clientPipe), std::move(newConnectionName));
+					MOCIPC_DBGPRINT("handling data received from server, pipe: %llx", (uintptr_t)connections.begin()->first);
+
+					handleServerConnection();
+					break;
+				}
+				else {
+
+					MOCIPC_DBGPRINT("Failed to connect to client pipe. Error: %d", GetLastError());
+				}
+				
+				MOCIPC_DBGPRINT("client stop to receive data, close.");
+				
 			}
-			});
+		});
 	}
 
 	void registerRecvHOOK(recvHookType_t callback) {
@@ -294,24 +365,41 @@ public:
 		}
 		return bytesWritten;
 	}
+	uint32_t write(void* src, uint32_t size) {
+		DWORD bytesWritten = 0;
+		MOCIPC_DBGPRINT("client connections size: %lld", connections.size());
+		if (connections.size() && connections.begin()->first != INVALID_HANDLE_VALUE) {
+			MOCIPC_DBGPRINT("client write data, handle: %llx", (uintptr_t)connections.begin()->first);
+			WriteFile(connections.begin()->first, src, size, &bytesWritten, NULL);
+		}
+		return bytesWritten;
+	}
 
 private:
-	IPCDefines::miStdString publicPipeName;
+	
 	std::map<HANDLE, IPCDefines::miStdString> connections;
 	recvHookType_t recvHook;
-	std::mutex mutex;
-
-	void handleServerConnection(HANDLE clientPipe) {
+	std::thread initThread;
+	void handleServerConnection() {
 		char buffer[4096];
 		DWORD bytesRead;
-		while (ReadFile(clientPipe, buffer, sizeof(buffer), &bytesRead, NULL)) {
+
+		while (1) {
+			if (!ReadFile(connections.begin()->first, buffer, sizeof(buffer), &bytesRead, NULL)) {
+				
+				continue;
+			}
+				
 			if (recvHook) {
 				recvHook(buffer);
+
 			}
+
 		}
-		std::lock_guard<std::mutex> lock(mutex);
-		connections.erase(clientPipe);
-		CloseHandle(clientPipe);
+		CloseHandle(connections.begin()->first);
+		connections.erase(connections.begin());
+
+		
 	}
 };
 
