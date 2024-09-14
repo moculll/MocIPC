@@ -19,9 +19,9 @@ int main(int argc, char* argv[])
     MocIPC::IPCClient *client = new MocIPC::IPCClient(MocIPC::IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDaemon"));
     client->registerRecvHOOK(clientRecvTestCallback);
     server->registerRecvHOOK(serverRecvTestCallback);
+    Sleep(2000);
     while (1) {
         int a = 15292;
-        Sleep(1000);
         server->write(0, &a, sizeof(a));
         client->write(&a, sizeof(a));
         Sleep(1000);
