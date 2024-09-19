@@ -9,6 +9,7 @@
 #include <future>
 #include <utility>
 #include <cstdint>
+
 #define MOCIPC_DBGPRINT_ENABLE 0
 #if MOCIPC_DBGPRINT_ENABLE
 
@@ -81,7 +82,7 @@ IPCDefines::miStdString generateRandomStdString(int length) {
 	IPCDefines::miStdString result;
 	std::random_device rd;
 	std::mt19937 gen(rd());
-	std::uniform_int_distribution<> dis(0, charset.size() - 1);
+	std::uniform_int_distribution<size_t> dis(0, charset.size() - 1);
 
 	for (int i = 0; i < length; ++i) {
 		result += charset[dis(gen)];
@@ -114,21 +115,19 @@ static inline HANDLE createDefaultPipe(const IPCDefines::miStdString& pipeName)
 class IPCUnit {
 public:
 
-	IPCUnit() : recvHook(nullptr), connThread(), connMap(), connList()
-	{
-		
-	}
+	IPCUnit() : recvHook(nullptr), connThread(), connMap(), connList() {}
 
 	uint32_t write(const IPCDefines::miStdString& name, void* src, uint32_t size) {
 		auto target = connMap.find(name);
 		if (target == connMap.end())
 			return 0;
-
-		std::async(std::launch::async, [src, size, target] {
+		char buffer[4096];
+		memcpy(buffer, src, size);
+		std::future<bool> result = std::async(std::launch::async, [buffer, size, target] {
 			ResetEvent(target->second.second.writeOverlapped.hEvent);
 			bool bReadDone = false;
 			while (!bReadDone) {
-				bReadDone = WriteFile(target->second.first, src, size, NULL, &target->second.second.writeOverlapped);
+				bReadDone = WriteFile(target->second.first, buffer, size, NULL, &target->second.second.writeOverlapped);
 				DWORD dwError = GetLastError();
 
 				if (!bReadDone && (dwError == ERROR_IO_PENDING)) {
@@ -141,13 +140,14 @@ public:
 					continue;
 				}
 			}
-			});
+			return true;
+		});
 		return 0;
 	}
 	uint32_t write(uint32_t index, void* src, uint32_t size) {
 		if (index >= connList.size())
 			return 0;
-		auto target = connMap.find(connList[index]);
+		auto target = connMap.find(connList[index].first);
 		if(target == connMap.end())
 			return 0;
 		return this->write(target->first, src, size);
@@ -155,14 +155,12 @@ public:
 	}
 
 	void handleConnections() {
-		char buffer[4096];
-		DWORD bytesRead;
+		
 
 		while (1) {
 
 			for (auto conn = connMap.begin(); conn != connMap.end(); ++conn) {
-				MOCIPC_DBGPRINT("handling...");
-				memset(buffer, 0, sizeof(buffer));
+				char buffer[4096] = {0};
 				ResetEvent(conn->second.second.readOverlapped.hEvent);
 				bool bReadDone = false;
 				while (!bReadDone) {
@@ -172,8 +170,10 @@ public:
 					if (!bReadDone && (dwError == ERROR_IO_PENDING)) {
 						MOCIPC_DBGPRINT("server waiting to read client response");
 						WaitForSingleObject(conn->second.second.readOverlapped.hEvent, INFINITE);
+						memcpy(buffer, &conn->second.second.readOverlapped.InternalHigh, 4);
+						
 						bReadDone = true;
-
+						break;
 					}
 					else {
 						continue;
@@ -181,13 +181,11 @@ public:
 				}
 
 				if (recvHook) {
-					memcpy(buffer, &conn->second.second.readOverlapped.InternalHigh, 4);
-
 					recvHook(buffer);
 					MOCIPC_DBGPRINT("server received %d bytes", readOverlapped.InternalHigh);
 				}
 
-				FlushFileBuffers(conn->second.first);
+				/*FlushFileBuffers(conn->second.first);*/
 
 			}
 
@@ -217,13 +215,13 @@ protected:
 			writeOverlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 			connectOverlapped.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 		}
-		overlapTable_t(overlapTable_t&& src) : readOverlapped(std::move(src.readOverlapped)), writeOverlapped(std::move(src.writeOverlapped)), connectOverlapped(std::move(src.connectOverlapped)) {}
+		overlapTable_t(overlapTable_t&& src) noexcept : readOverlapped(std::move(src.readOverlapped)), writeOverlapped(std::move(src.writeOverlapped)), connectOverlapped(std::move(src.connectOverlapped)) {}
 	};
 
 	recvHookType_t recvHook;
 	std::thread connThread;
 	std::map<IPCDefines::miStdString, std::pair<HANDLE, overlapTable_t> > connMap;
-	std::vector<IPCDefines::miStdString> connList;
+	std::vector<std::pair<IPCDefines::miStdString, std::thread>> connList;
 
 private:
 
@@ -234,21 +232,18 @@ private:
 
 };
 
-class IPCServer : public IPCUnit {
+class IPCServer final : public IPCUnit {
 public:
-	
-	IPCServer()
+	IPCServer() : IPCServer(IPCDefines::miStdString(miConstString("\\\\.\\pipe\\MOCIPCDeamon"))) {}
+	IPCServer(const IPCDefines::miStdString &publicPipeName)
 	{
 		MOCIPC_DBGPRINT("server Inited!");
 		MOCIPC_DBGPRINT("server infoSize: %lld", info.size());
-		connThread = std::thread([this] {
+		connThread = std::thread([this, publicPipeName] {
 			
-			HANDLE newConnectionHandle = INVALID_HANDLE_VALUE;
-			HANDLE deamonHandle = INVALID_HANDLE_VALUE;
-			/*deamonHandle = IPCStaticLibrary::createDefaultPipe(IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDeamon"));*/
 			while (1) {
 				overlapTable_t overlaps;
-				deamonHandle = IPCStaticLibrary::createDefaultPipe(IPCDefines::miStdString("\\\\.\\pipe\\MOCIPCDeamon"));
+				HANDLE deamonHandle = IPCStaticLibrary::createDefaultPipe(publicPipeName);
 				MOCIPC_DBGPRINT("IPC server deamon pipe create new!");
 				if (deamonHandle == INVALID_HANDLE_VALUE) {
 					MOCIPC_DBGPRINT("deamon handle is invalid");
@@ -259,6 +254,7 @@ public:
 				/* non block function */
 				bool connected = ConnectNamedPipe(deamonHandle, &overlaps.connectOverlapped) == 0 ? true : (GetLastError() == ERROR_PIPE_CONNECTED);
 				if (!connected && GetLastError() != ERROR_IO_PENDING) {
+					
 					CloseHandle(deamonHandle);
 					continue;
 				}
@@ -269,9 +265,9 @@ public:
 				
 				
 				MOCIPC_DBGPRINT("IPC server deamon found client connected, creating new random channel!");
-				IPCDefines::miStdString newConnectionName = IPCDefines::miStdString("\\\\.\\pipe\\MOCIPC") + IPCStaticLibrary::generateRandomStdString(8);
+				IPCDefines::miStdString newConnectionName = IPCDefines::miStdString(miConstString("\\\\.\\pipe\\MOCIPC")) + IPCStaticLibrary::generateRandomStdString(8);
 
-				newConnectionHandle = IPCStaticLibrary::createDefaultPipe(newConnectionName);
+				HANDLE newConnectionHandle = IPCStaticLibrary::createDefaultPipe(newConnectionName);
 				DWORD bytesWritten = 0;
 				DWORD bytesToWrite = static_cast<DWORD>(IPCStaticLibrary::getExactSizeofString(newConnectionName));
 				bool bReadDone = false;
@@ -313,25 +309,20 @@ public:
 
 				MOCIPC_DBGPRINT("read from public response, size: %d, len: %d", readOverlapped.InternalHigh, bytesReadStringLen);
 
-
 				DisconnectNamedPipe(deamonHandle);
 				CloseHandle(deamonHandle);
+
 				MOCIPC_DBGPRINT("new connection handle: %llx", (uintptr_t)newConnectionHandle);
 
 				ConnectNamedPipe(newConnectionHandle, NULL);
-		
-				
-
-				
-				MOCIPC_DBGPRINT("writed name: %s to client!", newConnectionName.c_str());
-				
-				connMap.emplace(newConnectionName, std::move(std::pair<HANDLE, overlapTable_t>(std::move(newConnectionHandle), std::move(overlaps))));
-				connList.emplace_back(newConnectionName);
-				std::async(std::launch::async, [this] {
-					MOCIPC_DBGPRINT("handling data received from client");
+				bool ready = false;
+				std::thread handleThread = std::thread([this,&ready] {
+					while(!ready);
 					handleConnections();
 				});
-
+				connMap.emplace(newConnectionName, std::pair<HANDLE, overlapTable_t>(std::move(newConnectionHandle), std::move(overlaps)));
+				connList.emplace_back(std::pair<IPCDefines::miStdString, std::thread>(newConnectionName, std::move(handleThread)));
+				ready = true;
 			}
 
 		});
@@ -339,18 +330,18 @@ public:
 	}
 
 private:
-	
 
-};
 
-class IPCClient : public IPCUnit {
+}; /* class IPCServer */
+
+class IPCClient final : public IPCUnit {
 public:
 	using MessageCallback = std::function<void(const IPCDefines::miStdString&)>;
 	using recvHookType_t = std::function<void(void*)>;
 	IPCDefines::miStdString publicPipeName;
 
-	
-	IPCClient(const IPCDefines::miStdString publicPipeName) : publicPipeName(publicPipeName) {
+	IPCClient() : IPCClient(MocIPC::IPCDefines::miStdString(miConstString("\\\\.\\pipe\\MOCIPCDeamon"))) {}
+	IPCClient(const IPCDefines::miStdString &publicPipeName) : publicPipeName(publicPipeName) {
 		MOCIPC_DBGPRINT("client Inited!");
 
 		connThread = std::thread([this] {
@@ -371,8 +362,6 @@ public:
 					continue;
 				MOCIPC_DBGPRINT("client connect to public server");
 				IPCDefines::miCharType_t buffer[4096];
-				DWORD bytesRead;
-				DWORD bytedSendBackRead;
 
 				bool bReadDone = false;
 				while (!bReadDone) {
@@ -431,14 +420,20 @@ public:
 				
 				MOCIPC_DBGPRINT("client connected to new pipe %s, handle: %llx", newConnectionName.c_str(), (uintptr_t)clientPipe);
 
-				connMap.emplace(newConnectionName, std::move(std::pair<HANDLE, overlapTable_t>(std::move(clientPipe), std::move(overlaps))));
-				connList.emplace_back(newConnectionName);
-				MOCIPC_DBGPRINT("handling data received from server, pipe: %llx", (uintptr_t)connMap.begin()->first);
 
-				handleConnections();
+
+				std::thread handleThread = std::thread([this] {
+					handleConnections();
+				});
+				connMap.emplace(newConnectionName, std::move(std::pair<HANDLE, overlapTable_t>(std::move(clientPipe), std::move(overlaps))));
+				connList.emplace_back(std::move(std::make_pair(newConnectionName, std::move(handleThread))));
+
+
+				MOCIPC_DBGPRINT("handling data received from server, pipe: %llx", (uintptr_t)connMap.begin()->first);
+				
 
 				MOCIPC_DBGPRINT("client stop to receive data, close.");
-				
+				break;
 			}
 		});
 	}
@@ -449,6 +444,6 @@ public:
 
 private:
 
-};
+}; /* class IPCClient */
 
 } /* MocIPC */
