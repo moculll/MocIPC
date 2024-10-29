@@ -10,7 +10,7 @@
 #include <utility>
 #include <cstdint>
 
-#define MOCIPC_DBGPRINT_ENABLE 0
+#define MOCIPC_DBGPRINT_ENABLE 1
 #if MOCIPC_DBGPRINT_ENABLE
 
 #define MOCIPC_DBGPRINT(fmt, ...) \
@@ -60,6 +60,19 @@ using miStdString = std::string;
 #define miConstString(x) x
 #endif
 
+template <typename T = miStdString>
+static inline T stringToMiString(const std::string& str) {
+	if constexpr (std::is_same_v<T, std::wstring>) {
+		int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), NULL, 0);
+		std::wstring wstr(size_needed, 0);
+		MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), &wstr[0], size_needed);
+		return wstr;
+	}
+	else {
+		return str;
+	}
+}
+
 } /* IPCDefines */
 
 namespace IPCStaticLibrary {
@@ -79,7 +92,7 @@ std::size_t getExactSizeofString(const T& str) {
 	}
 }
 
-IPCDefines::miStdString generateRandomStdString(int length) {
+static inline IPCDefines::miStdString generateRandomStdString(int length) {
 	IPCDefines::miStdString charset = miConstString("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
 	IPCDefines::miStdString result;
 	std::random_device rd;
@@ -92,7 +105,35 @@ IPCDefines::miStdString generateRandomStdString(int length) {
 
 	return result;
 }
-	
+
+static inline std::string generateRandomCommonStdString(int length) {
+	std::string charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+	std::string result;
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<size_t> dis(0, charset.size() - 1);
+
+	for (int i = 0; i < length; ++i) {
+		result += charset[dis(gen)];
+	}
+
+	return result;
+}
+
+static inline std::wstring stringToWString(const std::string& str) {
+	int size_needed = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), NULL, 0);
+	std::wstring wstr(size_needed, 0);
+	MultiByteToWideChar(CP_UTF8, 0, str.c_str(), static_cast<int>(str.size()), &wstr[0], size_needed);
+	return wstr;
+}
+
+static inline std::string wstringToString(const std::wstring& wstr) {
+	int size_needed = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), NULL, 0, NULL, NULL);
+	std::string str(size_needed, 0);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), static_cast<int>(wstr.size()), &str[0], size_needed, NULL, NULL);
+	return str;
+}
+
 static inline HANDLE createPipe(const IPCDefines::miStdString &pipeName, uint32_t outBufferSize, uint32_t inBufferSize)
 {
 	return CreateNamedPipe(
@@ -155,7 +196,10 @@ public:
 		return this->write(target->first, src, size);
 		
 	}
+	uint32_t write(void* src, uint32_t size) {
+		return write(0, src, size);
 
+	}
 	void handleConnections() {
 		
 
@@ -184,7 +228,7 @@ public:
 
 				if (recvHook) {
 					recvHook(buffer);
-					MOCIPC_DBGPRINT("server received %d bytes", readOverlapped.InternalHigh);
+					MOCIPC_DBGPRINT("server received %d bytes", conn->second.second.readOverlapped.InternalHigh);
 				}
 
 				/*FlushFileBuffers(conn->second.first);*/
@@ -240,7 +284,6 @@ public:
 	IPCServer(const IPCDefines::miStdString &publicPipeName)
 	{
 		MOCIPC_DBGPRINT("server Inited!");
-		MOCIPC_DBGPRINT("server infoSize: %lld", info.size());
 		connThread = std::thread([this, publicPipeName] {
 			
 			while (1) {
@@ -267,9 +310,11 @@ public:
 				
 				
 				MOCIPC_DBGPRINT("IPC server deamon found client connected, creating new random channel!");
-				IPCDefines::miStdString newConnectionName = IPCDefines::miStdString(miConstString("\\\\.\\pipe\\MOCIPC")) + IPCStaticLibrary::generateRandomStdString(8);
+				std::string newConnectionName = std::string("\\\\.\\pipe\\MOCIPC") + IPCStaticLibrary::generateRandomCommonStdString(8);
 
-				HANDLE newConnectionHandle = IPCStaticLibrary::createDefaultPipe(newConnectionName);
+				IPCDefines::miStdString newConnectionNameToCreate = IPCDefines::stringToMiString(newConnectionName);
+
+				HANDLE newConnectionHandle = IPCStaticLibrary::createDefaultPipe(newConnectionNameToCreate);
 				DWORD bytesWritten = 0;
 				DWORD bytesToWrite = static_cast<DWORD>(IPCStaticLibrary::getExactSizeofString(newConnectionName));
 				bool bReadDone = false;
@@ -309,7 +354,7 @@ public:
 					}
 				}
 
-				MOCIPC_DBGPRINT("read from public response, size: %d, len: %d", readOverlapped.InternalHigh, bytesReadStringLen);
+				MOCIPC_DBGPRINT("read from public response, size: %d, len: %d", overlaps.readOverlapped.InternalHigh, bytesReadStringLen);
 
 				DisconnectNamedPipe(deamonHandle);
 				CloseHandle(deamonHandle);
@@ -322,8 +367,8 @@ public:
 					while(!ready);
 					handleConnections();
 				});
-				connMap.emplace(newConnectionName, std::pair<HANDLE, overlapTable_t>(std::move(newConnectionHandle), std::move(overlaps)));
-				connList.emplace_back(std::pair<IPCDefines::miStdString, std::thread>(newConnectionName, std::move(handleThread)));
+				connMap.emplace(newConnectionNameToCreate, std::pair<HANDLE, overlapTable_t>(std::move(newConnectionHandle), std::move(overlaps)));
+				connList.emplace_back(std::pair<IPCDefines::miStdString, std::thread>(newConnectionNameToCreate, std::move(handleThread)));
 				ready = true;
 			}
 
@@ -363,7 +408,7 @@ public:
 				if(publicPipe == INVALID_HANDLE_VALUE)
 					continue;
 				MOCIPC_DBGPRINT("client connect to public server");
-				IPCDefines::miCharType_t buffer[4096];
+				char buffer[4096];
 
 				bool bReadDone = false;
 				while (!bReadDone) {
@@ -403,13 +448,17 @@ public:
 				CloseHandle(publicPipe);
 
 				
-				IPCDefines::miStdString newConnectionName(buffer, overlaps.readOverlapped.InternalHigh / sizeof(IPCDefines::miCharType_t));
+				std::string newConnectionName(buffer, overlaps.readOverlapped.InternalHigh);
+
+
 				MOCIPC_DBGPRINT("received name: %s from server", newConnectionName.c_str());
 				
+
+				IPCDefines::miStdString newConnectionNameToCreate = IPCDefines::stringToMiString(newConnectionName);
 				HANDLE clientPipe = INVALID_HANDLE_VALUE;
 				do {
 					clientPipe = CreateFile(
-						newConnectionName.c_str(),
+						newConnectionNameToCreate.c_str(),
 						GENERIC_READ | GENERIC_WRITE,
 						FILE_SHARE_READ | FILE_SHARE_WRITE,
 						NULL,
@@ -427,11 +476,11 @@ public:
 				std::thread handleThread = std::thread([this] {
 					handleConnections();
 				});
-				connMap.emplace(newConnectionName, std::move(std::pair<HANDLE, overlapTable_t>(std::move(clientPipe), std::move(overlaps))));
-				connList.emplace_back(std::move(std::make_pair(newConnectionName, std::move(handleThread))));
+				connMap.emplace(newConnectionNameToCreate, std::move(std::pair<HANDLE, overlapTable_t>(std::move(clientPipe), std::move(overlaps))));
+				connList.emplace_back(std::move(std::make_pair(newConnectionNameToCreate, std::move(handleThread))));
 
 
-				MOCIPC_DBGPRINT("handling data received from server, pipe: %llx", (uintptr_t)connMap.begin()->first);
+				MOCIPC_DBGPRINT("handling data received from server, pipe: %s", connMap.begin()->first.c_str());
 				
 
 				MOCIPC_DBGPRINT("client stop to receive data, close.");
