@@ -45,16 +45,19 @@ int main(int argc, char* argv[])
 
     }*/
     MocIPC::IPCServer* server = new MocIPC::IPCServer();
-    MocIPC::IPCClient* client = new MocIPC::IPCClient();
+    
 
-    client->registerRecvHOOK(clientRecvTestCallback);
+    
     server->registerRecvHOOK(serverRecvTestCallback);
    
     testdatServer = {1, 2.345, 0x67};
     testdatClient = { 8, 9.101, 0x11 };
+
+    MocIPC::IPCClient* client = new MocIPC::IPCClient();
+    client->registerRecvHOOK(clientRecvTestCallback);
     while (1) {
-        server->write(0, &testdatServer, sizeof(testdat_t));
-        client->write(0, &testdatClient, sizeof(testdat_t));
+        server->write(&testdatServer, sizeof(testdat_t));
+        client->write(&testdatClient, sizeof(testdat_t));
         Sleep(500);
     }
 }
