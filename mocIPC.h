@@ -228,7 +228,7 @@ public:
 
 				if (recvHook) {
 					recvHook(buffer);
-					MOCIPC_DBGPRINT("server received %d bytes", conn->second.second.readOverlapped.InternalHigh);
+					MOCIPC_DBGPRINT("server received %lld bytes", conn->second.second.readOverlapped.InternalHigh);
 				}
 
 				/*FlushFileBuffers(conn->second.first);*/
@@ -354,7 +354,7 @@ public:
 					}
 				}
 
-				MOCIPC_DBGPRINT("read from public response, size: %d, len: %d", overlaps.readOverlapped.InternalHigh, bytesReadStringLen);
+				MOCIPC_DBGPRINT("read from public response, size: %lld, len: %d", overlaps.readOverlapped.InternalHigh, bytesReadStringLen);
 
 				DisconnectNamedPipe(deamonHandle);
 				CloseHandle(deamonHandle);
@@ -426,7 +426,7 @@ public:
 					}
 				}
 
-				MOCIPC_DBGPRINT("client read from server done, len: %d", overlaps.readOverlapped.InternalHigh);
+				MOCIPC_DBGPRINT("client read from server done, len: %lld", overlaps.readOverlapped.InternalHigh);
 
 				bReadDone = false;
 				while (!bReadDone) {
@@ -444,7 +444,7 @@ public:
 					}
 				}
 				
-				MOCIPC_DBGPRINT("client write to public size: %d, origin: %d", overlaps.writeOverlapped.InternalHigh, overlaps.readOverlapped.InternalHigh);
+				MOCIPC_DBGPRINT("client write to public size: %lld, origin: %lld", overlaps.writeOverlapped.InternalHigh, overlaps.readOverlapped.InternalHigh);
 				CloseHandle(publicPipe);
 
 				
