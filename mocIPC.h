@@ -158,7 +158,7 @@ static inline HANDLE createDefaultPipe(const IPCDefines::miStdString& pipeName)
 class IPCUnit {
 public:
 
-	IPCUnit() : recvHook(nullptr), connThread(), connMap(), connList() {}
+	IPCUnit() : recvHook(nullptr), connThread(), connMap(), connList(), running(true) {}
 
 	uint32_t write(const IPCDefines::miStdString& name, void* src, uint32_t size) {
 		auto target = connMap.find(name);
@@ -200,10 +200,19 @@ public:
 		return write(0, src, size);
 
 	}
+
+	virtual void exit()
+	{
+		running = false;
+		for (auto conn = connMap.begin(); conn != connMap.end(); ++conn) {
+			CancelIoEx(conn->second.first, NULL);
+		}
+	}
+
 	void handleConnections() {
 		
 
-		while (1) {
+		while (running) {
 
 			for (auto conn = connMap.begin(); conn != connMap.end(); ++conn) {
 				char buffer[4096] = {0};
@@ -263,7 +272,7 @@ protected:
 		}
 		overlapTable_t(overlapTable_t&& src) noexcept : readOverlapped(std::move(src.readOverlapped)), writeOverlapped(std::move(src.writeOverlapped)), connectOverlapped(std::move(src.connectOverlapped)) {}
 	};
-
+	bool running;
 	recvHookType_t recvHook;
 	std::thread connThread;
 	std::map<IPCDefines::miStdString, std::pair<HANDLE, overlapTable_t> > connMap;
@@ -281,12 +290,15 @@ private:
 class IPCServer final : public IPCUnit {
 public:
 	IPCServer() : IPCServer(IPCDefines::miStdString(miConstString("\\\\.\\pipe\\MOCIPCDeamon"))) {}
+
+	
+
 	IPCServer(const IPCDefines::miStdString &publicPipeName)
 	{
 		MOCIPC_DBGPRINT("server Inited!");
 		connThread = std::thread([this, publicPipeName] {
 			
-			while (1) {
+			while (running) {
 				overlapTable_t overlaps;
 				HANDLE deamonHandle = IPCStaticLibrary::createDefaultPipe(publicPipeName);
 				MOCIPC_DBGPRINT("IPC server deamon pipe create new!");
@@ -392,7 +404,7 @@ public:
 		MOCIPC_DBGPRINT("client Inited!");
 
 		connThread = std::thread([this] {
-			while (true) {
+			while (running) {
 				overlapTable_t overlaps;
 
 				HANDLE publicPipe = CreateFile(
